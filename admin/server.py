@@ -184,6 +184,27 @@ def create_app(bot: Any = None) -> FastAPI:
 
     # ── 微信登录 ──────────────────────────────────────────────
 
+    @app.get("/api/admin/wechat/qr")
+    async def wechat_qr():
+        """返回二维码 base64 图片。"""
+        if not bot:
+            return {"qr_base64": "", "exists": False, "logged_in": False}
+        itchat = getattr(bot, "_itchat", None)
+        if itchat and getattr(itchat, "alive", False):
+            return {"qr_base64": "", "exists": False, "logged_in": True}
+        qp = getattr(bot, "qr_png", None)
+        if qp and qp.exists():
+            import base64
+            raw = qp.read_bytes()
+            b64 = base64.b64encode(raw).decode()
+            return {"qr_base64": b64, "exists": True, "logged_in": False}
+        # Fallback: read the QR URL text file
+        qr_url = getattr(bot, "qr_url_txt", None)
+        url = ""
+        if qr_url and qr_url.exists():
+            url = qr_url.read_text().strip()
+        return {"qr_base64": "", "exists": False, "logged_in": False, "qr_url": url}
+
     @app.get("/api/admin/wechat/status")
     async def wechat_status():
         if not bot:
@@ -358,6 +379,26 @@ def create_app(bot: Any = None) -> FastAPI:
             "enabled": bool(cfg.get("bot_token")),
         }
 
+    @app.put("/api/admin/tg-forward/config")
+    async def update_tgf(body: dict):
+        if not bot:
+            raise HTTPException(status_code=400, detail="Bot 未初始化")
+        if not hasattr(bot, "tg_forwarder"):
+            return {"success": False, "message": "TG 转发器未初始化"}
+        fwd = bot.tg_forwarder
+        cfg = getattr(fwd, "_config", {}) or {}
+        if "bot_token" in body:
+            cfg["bot_token"] = body["bot_token"]
+        if "user_id" in body:
+            cfg["user_id"] = body["user_id"]
+        if isinstance(getattr(fwd, "_config", None), dict):
+            fwd._config = cfg
+        # 保存到文件
+        conf_dir = _data_dir() / "tg_fwd"
+        conf_dir.mkdir(parents=True, exist_ok=True)
+        (conf_dir / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"success": True}
+
     # ── CF 图床 ──────────────────────────────────────────────
 
     @app.get("/api/admin/cftc/config")
@@ -367,6 +408,18 @@ def create_app(bot: Any = None) -> FastAPI:
             "username": a_cls_conf("cftc_username") or "",
             "enabled": bool(a_cls_conf("cftc_username")),
         }
+
+    @app.put("/api/admin/cftc/config")
+    async def update_cftc(body: dict):
+        if not bot:
+            raise HTTPException(status_code=400, detail="Bot 未初始化")
+        if "url" in body:
+            setattr(bot, "cftc_url", body["url"])
+        if "username" in body:
+            setattr(bot, "cftc_username", body["username"])
+        if "password" in body:
+            setattr(bot, "cftc_password", body["password"])
+        return {"success": True}
 
     # ── 模块推送 ──────────────────────────────────────────────
 
@@ -381,6 +434,26 @@ def create_app(bot: Any = None) -> FastAPI:
             "repos": cfg.get("custom_repos", []),
             "enabled": bool(cfg.get("github_token")),
         }
+
+    @app.put("/api/admin/module-push/config")
+    async def update_module_push(body: dict):
+        if not bot:
+            raise HTTPException(status_code=400, detail="Bot 未初始化")
+        if not hasattr(bot, "lsposed_tracker"):
+            return {"success": False, "message": "模块推送器未初始化"}
+        tracker = bot.lsposed_tracker
+        cfg = getattr(tracker, "_config", {}) or {}
+        if "github_token" in body:
+            cfg["github_token"] = body["github_token"]
+        if "custom_repos" in body and isinstance(body["custom_repos"], list):
+            cfg["custom_repos"] = body["custom_repos"]
+        if isinstance(getattr(tracker, "_config", None), dict):
+            tracker._config = cfg
+        # 保存到文件
+        conf_dir = _data_dir() / "lsposed"
+        conf_dir.mkdir(parents=True, exist_ok=True)
+        (conf_dir / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"success": True}
 
     # ── WeRSS 推文 ──────────────────────────────────────────
 

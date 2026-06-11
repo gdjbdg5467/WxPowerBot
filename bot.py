@@ -12,10 +12,8 @@ import logging
 import os
 import threading
 import time
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
 from handlers import CommandHandlers
 from tg_forward import TGForwarder
@@ -63,55 +61,6 @@ def _add_unique(seq: List[str], value: str) -> None:
     if value and value not in seq: seq.append(value)
 
 
-class _QRHandler(SimpleHTTPRequestHandler):
-    QR_PNG: Optional[Path] = None
-    def log_message(self, fmt, *args):
-        logger.debug("QR HTTP: " + fmt, *args)
-    def do_GET(self):
-        qp = self.QR_PNG
-        path = urlparse(self.path).path
-        if path == "/" and qp and qp.exists():
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(
-                f"""<!doctype html><html><head><meta charset='utf-8'>
-<meta http-equiv='refresh' content='15'>
-<title>WxPowerBot Login</title></head>
-<body style='background:#111;color:#ddd;font-family:sans-serif;text-align:center;padding-top:40px'>
-<h2>微信扫码登录 WxPowerBot</h2>
-<p>扫码后请在手机上点确认，新设备登录需等待约 15 秒倒计时。</p>
-<img src='/itchat_qr.png?t={int(time.time())}' style='max-width:420px;background:white;padding:12px;border-radius:12px'>
-</body></html>""".encode()
-            )
-            return
-        if path == "/" and qp is not None and not qp.exists():
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(
-                """<!doctype html><html><head><meta charset='utf-8'>
-<title>WxPowerBot</title></head>
-<body style='background:#111;color:#0f0;font-family:sans-serif;text-align:center;padding-top:80px'>
-<h1>✅ WxPowerBot 已登录</h1>
-<p style='color:#888'>运行中</p>
-</body></html>""".encode()
-            )
-            return
-        if path == "/itchat_qr.png" and qp and qp.exists():
-            data = qp.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "image/png")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-            return
-        self.send_response(404); self.end_headers()
-
-
 class WxPowerBot:
     """独立版 WeChat UOS 多功能机器人。"""
 
@@ -140,8 +89,6 @@ class WxPowerBot:
         # itchat
         self._itchat = None
         self._thread: Optional[threading.Thread] = None
-        self._qr_server: Optional[ThreadingHTTPServer] = None
-        self._qr_thread: Optional[threading.Thread] = None
         self._login_name = ""
         self._my_user_name = ""
         self._login_ts = 0
@@ -155,8 +102,6 @@ class WxPowerBot:
         self._allowed_users = _csv(self.get("allowed_users", ""))
         self._allowed_groups = _csv(self.get("allowed_groups", ""))
         self._respond_to_dms = bool(self.get("respond_to_dms", False))
-        self._qr_http = bool(self.get("qr_http", True))
-        self._qr_port = int(self.get("qr_port", 8646))
 
         # 子模块
         self.tg_forwarder = TGForwarder(self.data_dir)
@@ -448,22 +393,59 @@ class WxPowerBot:
             self._my_user_name = str(user.get("UserName") or "")
             logger.info("登录成功：%s (UserName=%s)", self._login_name, self._my_user_name[:16])
         except Exception: logger.info("登录成功")
-        # 登录成功后清除二维码文件，QR 页面显示"已登录"状态
-        try:
-            if self.qr_png.exists():
-                self.qr_png.unlink()
-        except Exception:
-            pass
 
-    def _start_qr_server(self) -> None:
-        if not self._qr_http or self._qr_server: return
+        # 登录成功后清除二维码文件
         try:
-            _QRHandler.QR_PNG = self.qr_png
-            self._qr_server = ThreadingHTTPServer(("0.0.0.0", self._qr_port), _QRHandler)
-            self._qr_thread = threading.Thread(target=self._qr_server.serve_forever, name="qr-http", daemon=True)
-            self._qr_thread.start()
-            logger.info("QR 服务: http://0.0.0.0:%s", self._qr_port)
-        except OSError as e: logger.warning("QR 服务启动失败: %s", e)
+            if self.qr_png.exists(): self.qr_png.unlink()
+        except Exception: pass
+
+        # ── 群去重：清理登录后已不存在的旧 GroupID 记录 ──
+        self._cleanup_stale_groups()
+
+    def _cleanup_stale_groups(self) -> None:
+        """登录后清理 ACL 中已失效的群 ID，避免同群名重复显示。"""
+        if self._itchat is None: return
+        try:
+            rooms = self._itchat.get_contact(0, 100000)
+            if not isinstance(rooms, list):
+                rooms = self._itchat.search_chatrooms() or []
+            if not isinstance(rooms, list): rooms = []
+        except Exception:
+            logger.exception("获取群列表失败")
+            return
+
+        # 构建 群名(标准化) → [(group_id, is_current)] 映射
+        current_groups: Dict[str, list] = {}
+        for r in rooms:
+            if not isinstance(r, dict): continue
+            rid = str(r.get("UserName") or "")
+            rname = self._normalize_group_name(r.get("NickName") or "")
+            if not rid or not rname: continue
+            current_groups.setdefault(rname, []).append(rid)
+
+        with self._acl_lock:
+            groups = self._acl.get("groups", {})
+            to_delete: list = []
+            for gid, g in list(groups.items()):
+                if not isinstance(g, dict): continue
+                gname = self._normalize_group_name(g.get("name", ""))
+                if not gname: continue
+                # 当前群名在 WeChat 中还存在
+                ids_for_name = current_groups.get(gname)
+                if ids_for_name is None:
+                    continue  # 这个群 WeChat 里已经没有 → 保留（可能是手动添加的虚拟群）
+                # 如果当前 group_id 不在 WeChat 的该群名下 → 是旧 ID，删除
+                if gid not in ids_for_name:
+                    to_delete.append(gid)
+                    logger.info("清理旧群: name=%s old_id=%s (当前ID=%s)",
+                                gname, gid[:16], ids_for_name[0][:16])
+
+            for gid in to_delete:
+                del groups[gid]
+
+            if to_delete:
+                self._save_acl()
+                logger.info("群去重完成: 清理了 %d 个旧记录", len(to_delete))
 
     def _run_itchat(self) -> None:
         try:
@@ -569,7 +551,6 @@ class WxPowerBot:
         logger.info("WxPowerBot 启动中...")
         logger.info("数据目录: %s", self.data_dir)
         logger.info("=" * 40)
-        self._start_qr_server()
         self._ensure_itchat_running()
         try:
             while True:
@@ -610,8 +591,4 @@ class WxPowerBot:
         try:
             if self._itchat is not None: self._itchat.logout()
         except Exception: pass
-        if self._qr_server:
-            try: self._qr_server.shutdown()
-            except Exception: pass
-            self._qr_server = None
         logger.info("WxPowerBot 已停止")

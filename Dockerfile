@@ -58,8 +58,6 @@ COPY admin/ admin/
 
 VOLUME ["/data"]
 
-EXPOSE 8646
-
 ENV WXPOWERBOT_DATA_DIR=/data
 
 CMD ["python3", "main.py"]
