@@ -143,6 +143,7 @@ class WxPowerBot:
         self._qr_server: Optional[ThreadingHTTPServer] = None
         self._qr_thread: Optional[threading.Thread] = None
         self._login_name = ""
+        self._my_user_name = ""
         self._login_ts = 0
         self._chat_names: Dict[str, str] = {}
         self._startup_ts = time.time()
@@ -408,6 +409,28 @@ class WxPowerBot:
 搜索 <关键词> — 盘搜资源
 上传 — 上传最新图片/文件到图床""")
 
+    # ── @ 检测（itchat-uos 不设置 IsAt，需要手动判断）───────
+
+    def _is_at_me(self, raw_text: str) -> bool:
+        """检查消息是否@了机器人（兼容 itchat-uos 不设置 IsAt 的问题）"""
+        if not raw_text or not raw_text.startswith("@"):
+            return False
+        # 提取 @ 后面的昵称（直到 \u2005 分隔符）
+        s = raw_text.strip()
+        idx = s.find("\u2005")
+        if idx < 0:
+            idx = s.find(" ")
+        if idx < 0:
+            return False
+        at_name = s[1:idx].strip()
+        if not at_name:
+            return False
+        if self._login_name and (at_name == self._login_name or at_name in self._login_name or self._login_name in at_name):
+            return True
+        if self._my_user_name and at_name == self._my_user_name:
+            return True
+        return False
+
     # ── itchat 启动 ──────────────────────────────────────────────────
 
     def _qr_callback(self, uuid: str, status: str, qrcode: bytes = b"", **kwargs: Any) -> None:
@@ -422,7 +445,8 @@ class WxPowerBot:
             user = self._itchat.search_friends() if self._itchat else {}
             if not isinstance(user, dict): user = {}
             self._login_name = html.unescape(str(user.get("NickName") or ""))
-            logger.info("登录成功：%s", self._login_name)
+            self._my_user_name = str(user.get("UserName") or "")
+            logger.info("登录成功：%s (UserName=%s)", self._login_name, self._my_user_name[:16])
         except Exception: logger.info("登录成功")
         # 登录成功后清除二维码文件，QR 页面显示"已登录"状态
         try:
@@ -454,14 +478,15 @@ class WxPowerBot:
                     msg.get("FromUserName","")[:20],
                     (msg.get("Text") or msg.get("Content") or "")[:80],
                     msg.get("Type",""))
-                if not getattr(msg, "IsAt", False): return
+                raw_text = getattr(msg, "text", None) or msg.get("Text") or msg.get("Content") or ""
+                is_at = getattr(msg, "IsAt", False) or self._is_at_me(raw_text)
+                if not is_at: return
                 group_id = getattr(msg, "fromUserName", None) or msg.get("FromUserName")
                 sender_id = getattr(msg, "actualUserName", None) or msg.get("ActualUserName") or ""
                 sender = getattr(msg, "actualNickName", None) or msg.get("ActualNickName") or sender_id
                 if self._login_ts > 0:
                     mt = getattr(msg, "createTime", None) or msg.get("CreateTime", 0)
                     if isinstance(mt, (int, float)) and mt < self._login_ts - 2: return
-                raw_text = getattr(msg, "text", None) or msg.get("Text") or msg.get("Content") or ""
                 text = _strip_at_prefix(raw_text)
                 group_name = self._resolve_group_name(group_id)
                 if self._allowed_groups and group_id not in self._allowed_groups and group_name not in self._allowed_groups:
