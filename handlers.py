@@ -448,6 +448,61 @@ class CommandHandlers:
 
     # ── GID 迁移 ────────────────────────────────────────────────────
 
+    def _handle_custom_command(self, text: str, *, group_id: str, group_name: str, sender: str, sender_id: str) -> bool:
+        """自定义指令处理：在 ACL 中定义，支持三级权限。"""
+        s = (text or "").strip()
+        if not s or self._itchat is None:
+            return False
+        with self._acl_lock:
+            group = self._group_acl(group_id, group_name)
+            cmds = group.get("custom_commands", {}) or {}
+            if not cmds:
+                return False
+            # 检查触发词（支持前缀匹配和精确匹配）
+            matched = None
+            for trigger, cfg in cmds.items():
+                if not isinstance(cfg, dict):
+                    continue
+                if s.lower() == trigger.lower():
+                    matched = (trigger, cfg)
+                    break
+            if not matched:
+                # 前缀匹配（如 trigger="查快递", s="查快递123456"）
+                for trigger, cfg in cmds.items():
+                    if not isinstance(cfg, dict):
+                        continue
+                    if s.lower().startswith(trigger.lower()):
+                        matched = (trigger, cfg)
+                        break
+            if not matched:
+                return False
+            trigger, cfg = matched
+            # 权限检查
+            permission = cfg.get("permission", "admin")  # all / authorized / admin
+            if permission == "admin":
+                if not self._is_group_admin(group, sender, sender_id):
+                    self._send_text(group_id, "你没有权限使用此指令。")
+                    return True
+            elif permission == "authorized":
+                if not self._is_group_admin(group, sender, sender_id) and \
+                   sender_id not in group.get("allowed_users", []):
+                    self._send_text(group_id, "你没有权限使用此指令。")
+                    return True
+            # permission == "all": 所有人都可以用
+            # 解析回复模板
+            response = cfg.get("response", "")
+            if not response:
+                return True
+            # 支持模板变量
+            response = response.replace("{sender}", sender)
+            response = response.replace("{group}", group.get("name", group_name))
+            response = response.replace("{trigger}", trigger)
+            # 如果带了额外的参数，替换 {args}
+            args = s[len(trigger):].strip() if len(s) > len(trigger) else ""
+            response = response.replace("{args}", args)
+            self._send_text(group_id, response)
+        return True
+
     def migrate_external_gid(self, old_gid: str, new_gid: str, group_name: str) -> None:
         try:
             cfg_file = self.tg_fwd_dir / "config.json"

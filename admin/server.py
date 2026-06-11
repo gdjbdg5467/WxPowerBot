@@ -532,6 +532,26 @@ def create_app(bot: Any = None) -> FastAPI:
             count = bot._refresh_group_members(group_id, g.get("name", ""))
         return {"success": True, "member_count": count}
 
+    @app.get("/api/admin/groups/{group_id}/commands")
+    async def get_commands(group_id: str):
+        if not bot:
+            raise HTTPException(status_code=400, detail="Bot 未初始化")
+        acl = getattr(bot, "_acl", {}) or {}
+        g = acl.get("groups", {}).get(group_id)
+        if not isinstance(g, dict):
+            raise HTTPException(status_code=404, detail="群不存在")
+        cmds = g.get("custom_commands", {}) or {}
+        cmd_list = []
+        for trigger, cfg in cmds.items():
+            if not isinstance(cfg, dict):
+                continue
+            cmd_list.append({
+                "trigger": trigger,
+                "response": cfg.get("response", ""),
+                "permission": cfg.get("permission", "admin"),
+            })
+        return {"commands": cmd_list}
+
     @app.put("/api/admin/groups/{group_id}/commands")
     async def update_commands(group_id: str, body: dict):
         if not bot:
@@ -540,7 +560,16 @@ def create_app(bot: Any = None) -> FastAPI:
         g = acl.get("groups", {}).get(group_id)
         if not isinstance(g, dict):
             raise HTTPException(status_code=404, detail="群不存在")
-        commands = body.get("commands", {}) or {}
+        cmd_list = body.get("commands", []) or []
+        commands = {}
+        for item in cmd_list:
+            trigger = (item.get("trigger") or "").strip()
+            if not trigger:
+                continue
+            commands[trigger] = {
+                "response": (item.get("response") or "").strip(),
+                "permission": item.get("permission", "admin"),
+            }
         with getattr(bot, "_acl_lock", __import__("threading").Lock()):
             g["custom_commands"] = commands
             g["updated_at"] = int(__import__("time").time())

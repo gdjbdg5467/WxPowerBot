@@ -201,10 +201,14 @@ class WxPowerBot:
             g["name"] = group_name; g["updated_at"] = now
         for k in ("authorized", "owner_uid", "initial_admin_uid", "admins",
                   "allowed_users", "members_cache", "created_at", "updated_at",
-                  "restored_from_group_id", "lsposed_enabled", "cftc_enabled",
-                  "pansou_enabled", "werss_enabled"):
+                  "restored_from_group_id", "tg_fwd_enabled", "lsposed_enabled", "cftc_enabled",
+                  "pansou_enabled", "werss_enabled", "custom_commands"):
             if k not in g:
-                g[k] = [] if k in ("admins", "allowed_users") else {} if k == "members_cache" else False if k in ("authorized", "lsposed_enabled", "cftc_enabled", "pansou_enabled", "werss_enabled") else "" if k in ("owner_uid", "initial_admin_uid", "restored_from_group_id") else now
+                g[k] = ([] if k in ("admins", "allowed_users") else
+                        {} if k in ("members_cache", "custom_commands") else
+                        False if k in ("authorized", "tg_fwd_enabled", "lsposed_enabled", "cftc_enabled", "pansou_enabled", "werss_enabled") else
+                        "" if k in ("owner_uid", "initial_admin_uid", "restored_from_group_id") else
+                        now)
         if g.get("restored_from_group_id") and g.get("updated_at") == now:
             self._save_acl()
         return g
@@ -328,6 +332,7 @@ class WxPowerBot:
     def _handle_cftc_upload_command(self, *a, **kw): return CommandHandlers.handle_cftc_upload_command(self, *a, **kw)
     def _handle_lsposed_text_command(self, *a, **kw): return CommandHandlers.handle_lsposed_text_command(self, *a, **kw)
     def _handle_werss_text_command(self, *a, **kw): return CommandHandlers.handle_werss_text_command(self, *a, **kw)
+    def _handle_custom_command(self, *a, **kw): return CommandHandlers._handle_custom_command(self, *a, **kw)
     def _migrate_external_gid(self, *a, **kw): return CommandHandlers.migrate_external_gid(self, *a, **kw)
     def _send_pansou_results(self, keyword, results, group_id):
         return CommandHandlers._send_pansou_results(self, keyword, results, group_id)
@@ -489,6 +494,8 @@ class WxPowerBot:
                 if self._handle_lsposed_text_command(text, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 wc = text.strip().lower().replace(" ", "")
                 if self._handle_werss_text_command(wc, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
+                # 自定义指令（在 ACL 中配置）
+                if self._handle_custom_command(text, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 if not self._can_use_group(group_id, group_name, sender, sender_id): return
                 # 未识别命令 → 帮助
                 if text.strip().lower().replace(" ", "") in ("帮助", "help", "菜单", "功能"):
