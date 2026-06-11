@@ -12,8 +12,11 @@ services:
     environment:
       - WXPOWERBOT_DATA_DIR=/data
       - TZ=Asia/Shanghai
-    # 配置也可以通过环境变量覆盖
-    # - WXPOWERBOT_ADMIN_USERS=昵称1,昵称2
-    # - WXPOWERBOT_PANSOU_API=http://192.168.1.100:850/api/search
-    # - WXPOWERBOT_CFTC_USERNAME=xxx
-    # - WXPOWERBOT_CFTC_PASSWORD=xxx
+      # 配置项可通过环境变量覆盖（优先级高于 config.json）
+      # - WXPOWERBOT_ADMIN_USERS=昵称1,昵称2
+      # - WXPOWERBOT_PANSOU_API=http://192.168.1.100:850/api/search
+      # - WXPOWERBOT_CFTC_USERNAME=xxx
+      # - WXPOWERBOT_CFTC_PASSWORD=xxx
+      # - WXPOWERBOT_WERSS_BASE=https://werss.example.com
+      # - WXPOWERBOT_WERSS_USER=xxx
+      # - WXPOWERBOT_WERSS_PASS=xxx

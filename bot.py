@@ -15,11 +15,13 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from handlers import CommandHandlers
 from tg_forward import TGForwarder
 from cftc import CFTCUploader
 from lsposed import LSPosedTracker
+from werss import WeRSSPoller
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,10 +44,18 @@ def _csv(value: Any) -> List[str]:
 
 def _strip_at_prefix(text: str) -> str:
     if not text: return ""
-    s = text.replace("\u2005", " ").strip()
+    # 微信 @消息格式: @昵称\u2005消息内容
+    # 不将 \u2005 替换为空格，直接用它分割
+    s = text.strip()
     if s.startswith("@"):
+        # 先找 \u2005 分隔符
+        idx = s.find("\u2005")
+        if idx >= 0:
+            return s[idx + 1:].strip()
+        # 没有 \u2005 时再用空格分割（兼容其他客户端）
         parts = s.split(maxsplit=1)
-        if len(parts) == 2: return parts[1].strip()
+        if len(parts) == 2:
+            return parts[1].strip()
     return s
 
 
@@ -59,23 +69,38 @@ class _QRHandler(SimpleHTTPRequestHandler):
         logger.debug("QR HTTP: " + fmt, *args)
     def do_GET(self):
         qp = self.QR_PNG
-        if self.path == "/" and qp and qp.exists():
+        path = urlparse(self.path).path
+        if path == "/" and qp and qp.exists():
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(
                 f"""<!doctype html><html><head><meta charset='utf-8'>
-<meta http-equiv='refresh' content='3'>
+<meta http-equiv='refresh' content='15'>
 <title>WxPowerBot Login</title></head>
 <body style='background:#111;color:#ddd;font-family:sans-serif;text-align:center;padding-top:40px'>
 <h2>微信扫码登录 WxPowerBot</h2>
-<p>页面每 3 秒刷新。扫码后请在手机上点确认。</p>
+<p>扫码后请在手机上点确认，新设备登录需等待约 15 秒倒计时。</p>
 <img src='/itchat_qr.png?t={int(time.time())}' style='max-width:420px;background:white;padding:12px;border-radius:12px'>
 </body></html>""".encode()
             )
             return
-        if self.path == "/itchat_qr.png" and qp and qp.exists():
+        if path == "/" and qp is not None and not qp.exists():
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(
+                """<!doctype html><html><head><meta charset='utf-8'>
+<title>WxPowerBot</title></head>
+<body style='background:#111;color:#0f0;font-family:sans-serif;text-align:center;padding-top:80px'>
+<h1>✅ WxPowerBot 已登录</h1>
+<p style='color:#888'>运行中</p>
+</body></html>""".encode()
+            )
+            return
+        if path == "/itchat_qr.png" and qp and qp.exists():
             data = qp.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
@@ -109,6 +134,7 @@ class WxPowerBot:
         self.pansou_state_file = self.state_dir / "pansou_state.json"
         (self.data_dir / "cftc_media").mkdir(exist_ok=True)
         (self.data_dir / "tg_fwd").mkdir(parents=True, exist_ok=True)
+        self.tg_fwd_dir = self.data_dir / "tg_fwd"
         (self.data_dir / "lsposed").mkdir(parents=True, exist_ok=True)
 
         # itchat
@@ -135,6 +161,14 @@ class WxPowerBot:
         self.tg_forwarder = TGForwarder(self.data_dir)
         self.cftc = CFTCUploader(self.data_dir, self.state_dir)
         self.lsposed = LSPosedTracker(self.data_dir)
+        self.werss = WeRSSPoller(self.data_dir)
+
+        # 盘搜配置（CommandHandlers mixin 需要）
+        self.PANSOU_ALLOWED_TYPES = {"quark", "115", "baidu", "uc", "magnet"}
+        self.PANSOU_SOURCE_LABELS = {
+            "quark": "夸克网盘", "115": "115网盘", "baidu": "百度网盘",
+            "uc": "UC网盘", "magnet": "磁力链接",
+        }
 
     # ── 配置 ──────────────────────────────────────────────────────────
 
@@ -222,9 +256,9 @@ class WxPowerBot:
         for k in ("authorized", "owner_uid", "initial_admin_uid", "admins",
                   "allowed_users", "members_cache", "created_at", "updated_at",
                   "restored_from_group_id", "lsposed_enabled", "cftc_enabled",
-                  "pansou_enabled"):
+                  "pansou_enabled", "werss_enabled"):
             if k not in g:
-                g[k] = [] if k in ("admins", "allowed_users") else {} if k == "members_cache" else False if k in ("authorized", "lsposed_enabled", "cftc_enabled", "pansou_enabled") else "" if k in ("owner_uid", "initial_admin_uid", "restored_from_group_id") else now
+                g[k] = [] if k in ("admins", "allowed_users") else {} if k == "members_cache" else False if k in ("authorized", "lsposed_enabled", "cftc_enabled", "pansou_enabled", "werss_enabled") else "" if k in ("owner_uid", "initial_admin_uid", "restored_from_group_id") else now
         if g.get("restored_from_group_id") and g.get("updated_at") == now:
             self._save_acl()
         return g
@@ -337,17 +371,20 @@ class WxPowerBot:
 
     _cmd_handlers = CommandHandlers()
 
-    def _handle_acl_command(self, *a, **kw): return self._cmd_handlers.handle_acl_command(self, *a, **kw)
+    def _handle_acl_command(self, *a, **kw): return CommandHandlers.handle_acl_command(self, *a, **kw)
     def _is_pansou_command(self, *a, **kw): return self._cmd_handlers._is_pansou_command(*a, **kw)
-    def _pansou_is_enabled(self, *a, **kw): return self._cmd_handlers._pansou_is_enabled(self, *a, **kw)
-    def _handle_pansou_search(self, *a, **kw): return self._cmd_handlers.handle_pansou_search(self, *a, **kw)
-    def _handle_pansou_toggle_command(self, *a, **kw): return self._cmd_handlers.handle_pansou_toggle_command(self, *a, **kw)
-    def _handle_tg_fwd_toggle_command(self, *a, **kw): return self._cmd_handlers.handle_tg_fwd_toggle_command(self, *a, **kw)
-    def _auto_add_tg_fwd_group(self, *a, **kw): return self._cmd_handlers.auto_add_tg_fwd_group(self, *a, **kw)
-    def _handle_cftc_toggle_command(self, *a, **kw): return self._cmd_handlers.handle_cftc_toggle_command(self, *a, **kw)
-    def _handle_cftc_upload_command(self, *a, **kw): return self._cmd_handlers.handle_cftc_upload_command(self, *a, **kw)
-    def _handle_lsposed_text_command(self, *a, **kw): return self._cmd_handlers.handle_lsposed_text_command(self, *a, **kw)
-    def _migrate_external_gid(self, *a, **kw): return self._cmd_handlers.migrate_external_gid(self, *a, **kw)
+    def _pansou_is_enabled(self, *a, **kw): return CommandHandlers._pansou_is_enabled(self, *a, **kw)
+    def _handle_pansou_search(self, *a, **kw): return CommandHandlers.handle_pansou_search(self, *a, **kw)
+    def _handle_pansou_toggle_command(self, *a, **kw): return CommandHandlers.handle_pansou_toggle_command(self, *a, **kw)
+    def _handle_tg_fwd_toggle_command(self, *a, **kw): return CommandHandlers.handle_tg_fwd_toggle_command(self, *a, **kw)
+    def _auto_add_tg_fwd_group(self, *a, **kw): return CommandHandlers.auto_add_tg_fwd_group(self, *a, **kw)
+    def _handle_cftc_toggle_command(self, *a, **kw): return CommandHandlers.handle_cftc_toggle_command(self, *a, **kw)
+    def _handle_cftc_upload_command(self, *a, **kw): return CommandHandlers.handle_cftc_upload_command(self, *a, **kw)
+    def _handle_lsposed_text_command(self, *a, **kw): return CommandHandlers.handle_lsposed_text_command(self, *a, **kw)
+    def _handle_werss_text_command(self, *a, **kw): return CommandHandlers.handle_werss_text_command(self, *a, **kw)
+    def _migrate_external_gid(self, *a, **kw): return CommandHandlers.migrate_external_gid(self, *a, **kw)
+    def _send_pansou_results(self, keyword, results, group_id):
+        return CommandHandlers._send_pansou_results(self, keyword, results, group_id)
 
     # ── 消息帮助（未被命令处理的消息） ──────────────────────────────
 
@@ -365,6 +402,7 @@ class WxPowerBot:
 开启转发 / 关闭转发
 开启上传 / 关闭上传
 开启更新 / 关闭更新
+开启推文 / 关闭推文
 
 ━━━ 使用 ━━━
 搜索 <关键词> — 盘搜资源
@@ -386,6 +424,12 @@ class WxPowerBot:
             self._login_name = html.unescape(str(user.get("NickName") or ""))
             logger.info("登录成功：%s", self._login_name)
         except Exception: logger.info("登录成功")
+        # 登录成功后清除二维码文件，QR 页面显示"已登录"状态
+        try:
+            if self.qr_png.exists():
+                self.qr_png.unlink()
+        except Exception:
+            pass
 
     def _start_qr_server(self) -> None:
         if not self._qr_http or self._qr_server: return
@@ -405,7 +449,12 @@ class WxPowerBot:
 
             @itchat.msg_register(TEXT, isGroupChat=True)
             def group_text_handler(msg):
-                if not getattr(msg, "isAt", False): return
+                logger.info("GROUP_MSG: IsAt=%s FromUserName=%s Content=%s Type=%s",
+                    getattr(msg, "IsAt", "N/A"),
+                    msg.get("FromUserName","")[:20],
+                    (msg.get("Text") or msg.get("Content") or "")[:80],
+                    msg.get("Type",""))
+                if not getattr(msg, "IsAt", False): return
                 group_id = getattr(msg, "fromUserName", None) or msg.get("FromUserName")
                 sender_id = getattr(msg, "actualUserName", None) or msg.get("ActualUserName") or ""
                 sender = getattr(msg, "actualNickName", None) or msg.get("ActualNickName") or sender_id
@@ -419,7 +468,10 @@ class WxPowerBot:
                     return
 
                 # 命令链
-                if self._handle_acl_command(text, sender=sender, sender_id=sender_id, chat_id=group_id, group_name=group_name): return
+                logger.info("CMD: text='%s' sender='%s' group_name='%s'", text, sender, group_name)
+                result = self._handle_acl_command(text, sender=sender, sender_id=sender_id, chat_id=group_id, group_name=group_name)
+                logger.info("CMD_ACL_RESULT: %s", result)
+                if result: return
                 if self._handle_pansou_search(text, group_id, group_name, sender=sender, sender_id=sender_id) is not None: return
                 if self._handle_pansou_toggle_command(text, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 tc = text.strip().lower().replace(" ", "")
@@ -428,6 +480,8 @@ class WxPowerBot:
                 if self._handle_cftc_toggle_command(cc, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 if self._handle_cftc_upload_command(text, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 if self._handle_lsposed_text_command(text, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
+                wc = text.strip().lower().replace(" ", "")
+                if self._handle_werss_text_command(wc, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 if not self._can_use_group(group_id, group_name, sender, sender_id): return
                 # 未识别命令 → 帮助
                 if text.strip().lower().replace(" ", "") in ("帮助", "help", "菜单", "功能"):
@@ -449,7 +503,7 @@ class WxPowerBot:
                 try: p.unlink()
                 except FileNotFoundError: pass
 
-            itchat.auto_login(hotReload=True, statusStorageDir=str(self.pkl_file),
+            itchat.auto_login(hotReload=False,
                               qrCallback=self._qr_callback, loginCallback=self._login_callback,
                               exitCallback=lambda: logger.warning("已退出登录"))
             logger.info("消息监听已启动")
@@ -491,13 +545,40 @@ class WxPowerBot:
         logger.info("数据目录: %s", self.data_dir)
         logger.info("=" * 40)
         self._start_qr_server()
-        self._thread = threading.Thread(target=self._run_itchat, name="wxpowerbot", daemon=True)
-        self._thread.start()
-        logger.info("WxPowerBot 已启动")
+        self._ensure_itchat_running()
         try:
-            while True: time.sleep(1)
+            while True:
+                time.sleep(1)
         except KeyboardInterrupt:
             self.stop()
+
+    def _ensure_itchat_running(self) -> None:
+        """启动 itchat 线程，崩溃后自动重连。"""
+        self._itchat_stop = threading.Event()
+        self._thread = threading.Thread(target=self._run_itchat, name="wxpowerbot", daemon=True)
+        self._thread.start()
+        # 后台监控线程：检测 itchat 是否崩溃，自动重启
+        def watchdog():
+            while not self._itchat_stop.is_set():
+                self._itchat_stop.wait(10)
+                if self._thread and not self._thread.is_alive() and not self._itchat_stop.is_set():
+                    logger.warning("itchat 线程已退出，30秒后自动重连...")
+                    time.sleep(30)
+                    # 清除旧会话
+                    try:
+                        itchat_pkl = self.state_dir / "itchat.pkl"
+                        if itchat_pkl.exists():
+                            itchat_pkl.unlink()
+                    except Exception:
+                        pass
+                    # 重启
+                    self._thread = threading.Thread(target=self._run_itchat, name="wxpowerbot", daemon=True)
+                    self._thread.start()
+                    logger.info("itchat 重连线程已启动")
+            logger.info("watchdog 已停止")
+        watchdog_thread = threading.Thread(target=watchdog, name="wxpowerbot-watchdog", daemon=True)
+        watchdog_thread.start()
+        logger.info("WxPowerBot 已启动 (看门狗已启用)")
 
     def stop(self) -> None:
         logger.info("WxPowerBot 停止中...")

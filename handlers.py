@@ -190,7 +190,7 @@ class CommandHandlers:
         if self._itchat is None:
             return True
         if not self._pansou_is_enabled(group_id):
-            return True
+            return None
         with self._acl_lock:
             group = self._group_acl(group_id, group_name)
             if not group.get("authorized"):
@@ -413,6 +413,37 @@ class CommandHandlers:
                 en = "🟢 已开启" if group.get("lsposed_enabled") else "🔴 已关闭"
             self._send_text(group_id, f"模块更新：{en}\n已跟踪：{len(state.get('modules', {}))} 个模块\n自定义仓库：{len(cfg.get('custom_repos', []))} 个")
             return True
+        return False
+
+    # ── WeRSS 公众号推文 ─────────────────────────────────────────────
+
+    def handle_werss_text_command(self, text: str, *, group_id: str, group_name: str, sender: str, sender_id: str) -> bool:
+        s = text.strip().lower().replace(" ", "")
+        if s not in {"开启推文", "关闭推文"}:
+            return False
+        if self._itchat is None:
+            return True
+        with self._acl_lock:
+            group = self._group_acl(group_id, group_name)
+            self._remember_member(group, sender_id, nick=sender, display=sender)
+            if not group.get("authorized"):
+                self._send_text(group_id, "当前群尚未授权。"); return True
+            if not self._is_group_admin(group, sender, sender_id):
+                self._send_text(group_id, "你没有权限。"); return True
+        if s == "开启推文":
+            with self._acl_lock:
+                group = self._group_acl(group_id, group_name)
+                group["werss_enabled"] = True
+                group["updated_at"] = int(time.time())
+                self._save_acl()
+            self._send_text(group_id, "✅ 公众号推文推送已开启"); return True
+        if s == "关闭推文":
+            with self._acl_lock:
+                group = self._group_acl(group_id, group_name)
+                group["werss_enabled"] = False
+                group["updated_at"] = int(time.time())
+                self._save_acl()
+            self._send_text(group_id, "✅ 公众号推文推送已关闭"); return True
         return False
 
     # ── GID 迁移 ────────────────────────────────────────────────────
