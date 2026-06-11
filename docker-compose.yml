@@ -8,7 +8,8 @@ services:
     volumes:
       - ./data:/data
     ports:
-      - "8646:8646"   # QR 码 HTTP 服务
+      - "8647:8646"   # QR 码 HTTP 服务（host 8647 → container 8646，避免与 wechat-services 冲突）
+      - "8645:8645"   # 管理后台
     environment:
       - WXPOWERBOT_DATA_DIR=/data
       - TZ=Asia/Shanghai

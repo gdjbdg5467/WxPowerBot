@@ -54,6 +54,7 @@ print("Patches complete")
 PYEOF
 
 COPY bot.py handlers.py tg_forward.py cftc.py lsposed.py werss.py main.py config.yaml ./
+COPY admin/ admin/
 
 VOLUME ["/data"]
 
