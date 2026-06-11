@@ -189,7 +189,10 @@ class WxPowerBot:
                     "updated_at": now, "restored_from_group_id": old_id,
                 }
                 groups[group_id] = g
-                logger.info("ACL restored: %s new=%s old=%s", g.get("name"), group_id[:16], old_id[:16])
+                # 删除旧 ID 条目，避免同群名重复
+                if old_id and old_id != group_id:
+                    del groups[old_id]
+                logger.info("ACL restored: %s new=%s old=%s (已删除旧记录)", g.get("name"), group_id[:16], old_id[:16])
                 self._migrate_external_gid(old_id, group_id, g.get("name") or group_name)
         if not isinstance(g, dict):
             g = groups.setdefault(group_id, {
@@ -408,49 +411,36 @@ class WxPowerBot:
         self._cleanup_stale_groups()
 
     def _cleanup_stale_groups(self) -> None:
-        """登录后清理 ACL 中已失效的群 ID，避免同群名重复显示。"""
-        if self._itchat is None: return
-        try:
-            rooms = self._itchat.get_contact(0, 100000)
-            if not isinstance(rooms, list):
-                rooms = self._itchat.search_chatrooms() or []
-            if not isinstance(rooms, list): rooms = []
-        except Exception:
-            logger.exception("获取群列表失败")
-            return
-
-        # 构建 群名(标准化) → [(group_id, is_current)] 映射
-        current_groups: Dict[str, list] = {}
-        for r in rooms:
-            if not isinstance(r, dict): continue
-            rid = str(r.get("UserName") or "")
-            rname = self._normalize_group_name(r.get("NickName") or "")
-            if not rid or not rname: continue
-            current_groups.setdefault(rname, []).append(rid)
-
+        """登录后清理同名群重复记录：每个群名只保留最新一条。"""
         with self._acl_lock:
             groups = self._acl.get("groups", {})
-            to_delete: list = []
+            # 按群名分组，每组选最新 updated_at 的 ID
+            name_best: Dict[str, tuple] = {}  # name → (best_gid, best_ts)
             for gid, g in list(groups.items()):
                 if not isinstance(g, dict): continue
-                gname = self._normalize_group_name(g.get("name", ""))
-                if not gname: continue
-                # 当前群名在 WeChat 中还存在
-                ids_for_name = current_groups.get(gname)
-                if ids_for_name is None:
-                    continue  # 这个群 WeChat 里已经没有 → 保留（可能是手动添加的虚拟群）
-                # 如果当前 group_id 不在 WeChat 的该群名下 → 是旧 ID，删除
-                if gid not in ids_for_name:
+                name = self._normalize_group_name(g.get("name", ""))
+                if not name: continue
+                ts = g.get("updated_at", 0) or 0
+                if name not in name_best or ts > name_best[name][1]:
+                    name_best[name] = (gid, ts)
+
+            to_delete = []
+            for gid, g in list(groups.items()):
+                if not isinstance(g, dict): continue
+                name = self._normalize_group_name(g.get("name", ""))
+                if not name: continue
+                best_id = name_best.get(name, ("", 0))[0]
+                if gid != best_id:
                     to_delete.append(gid)
-                    logger.info("清理旧群: name=%s old_id=%s (当前ID=%s)",
-                                gname, gid[:16], ids_for_name[0][:16])
+                    logger.info("清理重复群: name=%s old_id=%s (保留 %s)",
+                                name, gid[:16], best_id[:16])
 
             for gid in to_delete:
                 del groups[gid]
 
             if to_delete:
                 self._save_acl()
-                logger.info("群去重完成: 清理了 %d 个旧记录", len(to_delete))
+                logger.info("群去重完成: 清理了 %d 个重复记录", len(to_delete))
 
     def _run_itchat(self) -> None:
         try:
