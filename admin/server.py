@@ -109,8 +109,9 @@ def create_app(bot: Any = None) -> FastAPI:
         if bot:
             # 微信状态
             itchat = getattr(bot, "_itchat", None)
-            if itchat and getattr(itchat, "alive", False):
-                login_info = getattr(itchat, "loginInfo", {}) or {}
+            inst = getattr(itchat, "instance", None) if itchat else None
+            if inst and getattr(inst, "alive", False):
+                login_info = getattr(inst, "loginInfo", {}) or {}
                 data["wechat_status"] = {
                     "logged_in": True,
                     "nickname": login_info.get("NickName", ""),
@@ -190,7 +191,8 @@ def create_app(bot: Any = None) -> FastAPI:
         if not bot:
             return {"qr_base64": "", "exists": False, "logged_in": False}
         itchat = getattr(bot, "_itchat", None)
-        if itchat and getattr(itchat, "alive", False):
+        inst = getattr(itchat, "instance", None) if itchat else None
+        if inst and getattr(inst, "alive", False):
             return {"qr_base64": "", "exists": False, "logged_in": True}
         qp = getattr(bot, "qr_png", None)
         if qp and qp.exists():
@@ -210,9 +212,10 @@ def create_app(bot: Any = None) -> FastAPI:
         if not bot:
             return {"logged_in": False}
         itchat = getattr(bot, "_itchat", None)
-        alive = itchat and getattr(itchat, "alive", False)
+        inst = getattr(itchat, "instance", None) if itchat else None
+        alive = inst and getattr(inst, "alive", False)
         if alive:
-            login_info = getattr(itchat, "loginInfo", {}) or {}
+            login_info = getattr(inst, "loginInfo", {}) or {}
             return {
                 "logged_in": True,
                 "nickname": login_info.get("NickName", ""),
