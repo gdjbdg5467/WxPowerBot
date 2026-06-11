@@ -74,11 +74,30 @@ def create_app(bot: Any = None) -> FastAPI:
     # 注入 bot 实例到 app.state
     app.state.bot = bot
 
-    # 静态文件（前端构建产物）
+    # 静态文件服务 + SPA 回退
     static_dir = Path(__file__).resolve().parent / "static"
     if static_dir.exists() and (static_dir / "index.html").exists():
-        from fastapi.staticfiles import StaticFiles
-        app.mount("/admin", StaticFiles(directory=str(static_dir), html=True), name="admin-static")
+        from fastapi.responses import FileResponse, HTMLResponse
+        index_html_content = (static_dir / "index.html").read_text(encoding="utf-8")
+
+        @app.get("/admin/static/{file_path:path}", include_in_schema=False)
+        async def admin_static(file_path: str):
+            fp = static_dir / file_path
+            if fp.exists() and fp.is_file():
+                return FileResponse(str(fp))
+            return HTMLResponse(index_html_content, status_code=404)
+
+        @app.get("/admin", include_in_schema=False)
+        @app.get("/admin/", include_in_schema=False)
+        async def admin_index():
+            return HTMLResponse(index_html_content)
+
+        @app.api_route("/admin/{path:path}", methods=["GET"], include_in_schema=False)
+        async def admin_spa(path: str):
+            fp = static_dir / path
+            if fp.exists() and fp.is_file() and not path.endswith("/"):
+                return FileResponse(str(fp))
+            return HTMLResponse(index_html_content)
 
     def _data_dir() -> Path:
         if bot:
