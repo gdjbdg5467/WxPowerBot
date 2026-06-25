@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import urllib.request
+from douyin import extract_douyin_url, format_video_info, parse_video
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote as _urlquote
 
@@ -538,3 +539,46 @@ class CommandHandlers:
                     lsposed_cfg.write_text(json.dumps(lcfg, ensure_ascii=False, indent=2))
         except Exception:
             logger.exception("GID migration error")
+
+    # ── 抖音解析 ───────────────────────────────────────────────────
+
+    def handle_douyin_toggle_command(self, compact: str, *, group_id: str, group_name: str, sender: str, sender_id: str) -> bool:
+        if compact not in ("开启抖音解析", "关闭抖音解析"):
+            return False
+        if self._itchat is None:
+            return True
+        with self._acl_lock:
+            group = self._group_acl(group_id, group_name)
+            self._remember_member(group, sender_id, nick=sender, display=sender)
+            if not group.get("authorized"):
+                self._send_text(group_id, "本群尚未开启，请先发送：开启授权"); return True
+            if not self._is_group_admin(group, sender, sender_id):
+                self._send_text(group_id, "你没有权限管理抖音解析。"); return True
+            en = compact == "开启抖音解析"
+            group["douyin_enabled"] = en
+            group["updated_at"] = int(time.time())
+            self._save_acl()
+        self._send_text(group_id, f"✅ 抖音解析已{'开启' if en else '关闭'}")
+        return True
+
+    def handle_douyin_parse(self, text: str, *, group_id: str, group_name: str, sender: str, sender_id: str) -> bool:
+        """检测消息中的抖音链接并解析"""
+        url = extract_douyin_url(text)
+        if not url:
+            return False
+        if self._itchat is None:
+            return True
+        with self._acl_lock:
+            group = self._group_acl(group_id, group_name)
+            if not group.get("authorized"):
+                return True
+            if not group.get("douyin_enabled", True):
+                return True
+        self._send_text(group_id, "⏳ 正在解析抖音视频...")
+        data = parse_video(url)
+        result = format_video_info(data)
+        if result:
+            self._send_text(group_id, result)
+        else:
+            self._send_text(group_id, "❌ 抖音视频解析失败")
+        return True

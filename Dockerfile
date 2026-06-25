@@ -53,7 +53,7 @@ with open(path, 'w') as f:
 print("Patches complete")
 PYEOF
 
-COPY bot.py handlers.py tg_forward.py cftc.py lsposed.py werss.py main.py config.yaml ./
+COPY bot.py handlers.py tg_forward.py cftc.py lsposed.py werss.py douyin.py main.py config.yaml ./
 COPY admin/ admin/
 
 VOLUME ["/data"]

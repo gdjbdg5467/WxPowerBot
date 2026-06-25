@@ -20,6 +20,7 @@ from tg_forward import TGForwarder
 from cftc import CFTCUploader
 from lsposed import LSPosedTracker
 from werss import WeRSSPoller
+from douyin import extract_douyin_url, format_video_info, parse_video
 
 logging.basicConfig(
     level=logging.INFO,
@@ -205,11 +206,11 @@ class WxPowerBot:
         for k in ("authorized", "owner_uid", "initial_admin_uid", "admins",
                   "allowed_users", "members_cache", "created_at", "updated_at",
                   "restored_from_group_id", "tg_fwd_enabled", "lsposed_enabled", "cftc_enabled",
-                  "pansou_enabled", "werss_enabled", "custom_commands"):
+                  "pansou_enabled", "werss_enabled", "douyin_enabled", "custom_commands"):
             if k not in g:
                 g[k] = ([] if k in ("admins", "allowed_users") else
                         {} if k in ("members_cache", "custom_commands") else
-                        False if k in ("authorized", "tg_fwd_enabled", "lsposed_enabled", "cftc_enabled", "pansou_enabled", "werss_enabled") else
+                        False if k in ("authorized", "tg_fwd_enabled", "lsposed_enabled", "cftc_enabled", "pansou_enabled", "werss_enabled", "douyin_enabled") else
                         "" if k in ("owner_uid", "initial_admin_uid", "restored_from_group_id") else
                         now)
         if g.get("restored_from_group_id") and g.get("updated_at") == now:
@@ -335,6 +336,8 @@ class WxPowerBot:
     def _handle_cftc_upload_command(self, *a, **kw): return CommandHandlers.handle_cftc_upload_command(self, *a, **kw)
     def _handle_lsposed_text_command(self, *a, **kw): return CommandHandlers.handle_lsposed_text_command(self, *a, **kw)
     def _handle_werss_text_command(self, *a, **kw): return CommandHandlers.handle_werss_text_command(self, *a, **kw)
+    def _handle_douyin_toggle_command(self, *a, **kw): return CommandHandlers.handle_douyin_toggle_command(self, *a, **kw)
+    def _handle_douyin_parse(self, *a, **kw): return CommandHandlers.handle_douyin_parse(self, *a, **kw)
     def _handle_custom_command(self, *a, **kw): return CommandHandlers._handle_custom_command(self, *a, **kw)
     def _migrate_external_gid(self, *a, **kw): return CommandHandlers.migrate_external_gid(self, *a, **kw)
     def _send_pansou_results(self, keyword, results, group_id):
@@ -357,6 +360,7 @@ class WxPowerBot:
 开启上传 / 关闭上传
 开启更新 / 关闭更新
 开启推文 / 关闭推文
+开启抖音解析 / 关闭抖音解析
 
 ━━━ 使用 ━━━
 搜索 <关键词> — 盘搜资源
@@ -484,6 +488,10 @@ class WxPowerBot:
                 if self._handle_lsposed_text_command(text, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 wc = text.strip().lower().replace(" ", "")
                 if self._handle_werss_text_command(wc, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
+                dc = text.strip().lower().replace(" ", "")
+                if self._handle_douyin_toggle_command(dc, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
+                # 抖音解析
+                if self._handle_douyin_parse(text, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 # 自定义指令（在 ACL 中配置）
                 if self._handle_custom_command(text, group_id=group_id, group_name=group_name, sender=sender, sender_id=sender_id): return
                 if not self._can_use_group(group_id, group_name, sender, sender_id): return

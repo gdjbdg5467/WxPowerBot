@@ -87,6 +87,11 @@ def create_app(bot: Any = None) -> FastAPI:
                 return FileResponse(str(fp))
             return HTMLResponse(index_html_content, status_code=404)
 
+        @app.get("/", include_in_schema=False)
+        async def root_redirect():
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url="/admin")
+
         @app.get("/admin", include_in_schema=False)
         @app.get("/admin/", include_in_schema=False)
         async def admin_index():
@@ -152,6 +157,7 @@ def create_app(bot: Any = None) -> FastAPI:
                 "cftc": bool(a_cls_conf("cftc_username")),
                 "lsposed": bool(a_cls_conf("lsposed_github_token")),
                 "werss": bool(os.getenv("WERSS_BASE") or (a_cls_conf("werss_base") != "http://localhost:8001/api/v1/wx")),
+                "douyin": True,
             }
 
         return data
@@ -391,13 +397,18 @@ def create_app(bot: Any = None) -> FastAPI:
     @app.get("/api/admin/tg-forward/config")
     async def tgf_config():
         if not bot or not hasattr(bot, "tg_forwarder"):
-            return {"bot_token": "", "user_id": "", "channels": [], "enabled": False}
-        fwd = bot.tg_forwarder
-        cfg = getattr(fwd, "_config", {}) or {}
+            return {"bot_token": "", "tg_channel": "", "enabled": False}
+        # 从文件读取真实配置
+        cfg_file = _data_dir() / "tg_fwd" / "config.json"
+        cfg = {}
+        if cfg_file.exists():
+            try: cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            except Exception: pass
+        rules = cfg.get("forward_rules", [])
+        tg_channel = rules[0].get("tg_channel", "") if rules else ""
         return {
             "bot_token": "***" if cfg.get("bot_token") else "",
-            "user_id": cfg.get("user_id", ""),
-            "channels": cfg.get("channels", []),
+            "tg_channel": tg_channel,
             "enabled": bool(cfg.get("bot_token")),
         }
 
@@ -407,14 +418,22 @@ def create_app(bot: Any = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="Bot 未初始化")
         if not hasattr(bot, "tg_forwarder"):
             return {"success": False, "message": "TG 转发器未初始化"}
-        fwd = bot.tg_forwarder
-        cfg = getattr(fwd, "_config", {}) or {}
-        if "bot_token" in body:
-            cfg["bot_token"] = body["bot_token"]
-        if "user_id" in body:
-            cfg["user_id"] = body["user_id"]
-        if isinstance(getattr(fwd, "_config", None), dict):
-            fwd._config = cfg
+        bot_token = body.get("bot_token", "")
+        tg_channel = body.get("tg_channel", "")
+        # 获取已授权且开启转发的群
+        acl = getattr(bot, "_acl", {}) or {}
+        groups = acl.get("groups", {})
+        wechat_groups = []
+        for gid, g in groups.items():
+            if g.get("authorized") and g.get("tg_fwd_enabled"):
+                wechat_groups.append(gid)
+        # 构建正确的配置格式
+        cfg = {"bot_token": bot_token}
+        if tg_channel and wechat_groups:
+            cfg["forward_rules"] = [{
+                "tg_channel": tg_channel,
+                "wechat_groups": wechat_groups,
+            }]
         # 保存到文件
         conf_dir = _data_dir() / "tg_fwd"
         conf_dir.mkdir(parents=True, exist_ok=True)
@@ -632,6 +651,24 @@ def create_app(bot: Any = None) -> FastAPI:
                 pass
         return {"success": True, "message": "微信连接已关闭"}
 
+    # ── 抖音解析 ──────────────────────────────────────────────
+
+    @app.get("/api/admin/douyin/config")
+    async def douyin_config():
+        api_url = a_cls_conf("douyin_api") or "http://192.168.10.233:851"
+        cookie = a_cls_conf("douyin_cookie") or ""
+        return {"api_url": api_url, "enabled": True, "cookie": cookie}
+
+    @app.put("/api/admin/douyin/config")
+    async def update_douyin(body: dict):
+        if not bot:
+            raise HTTPException(status_code=400, detail="Bot 未初始化")
+        if "api_url" in body:
+            setattr(bot, "douyin_api", body["api_url"])
+        if "cookie" in body:
+            setattr(bot, "douyin_cookie", body["cookie"])
+        return {"success": True}
+
     # ── 工具函数 ──────────────────────────────────────────────
 
     def _format_group(g: dict, gid: str) -> dict:
@@ -662,6 +699,7 @@ def create_app(bot: Any = None) -> FastAPI:
             "cftc_enabled": bool(g.get("cftc_enabled")),
             "lsposed_enabled": bool(g.get("lsposed_enabled")),
             "werss_enabled": bool(g.get("werss_enabled")),
+            "douyin_enabled": bool(g.get("douyin_enabled")),
         }
 
     return app
